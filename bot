@@ -1,0 +1,89 @@
+import os
+import yt_dlp
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+
+BOT_TOKEN = "BOT_TOKEN"  # <-- Add your Telegram bot token here
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🎬 Send me any YouTube video link and I’ll fetch all download options for you!")
+
+
+async def get_video_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url = update.message.text.strip()
+    await update.message.reply_text("🔍 Fetching video info, please wait...")
+
+    ydl_opts = {'quiet': True}
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+        return
+
+    formats = []
+    for f in info['formats']:
+        if f.get("vcodec") != "none" and f.get("acodec") != "none":
+            if f.get("filesize"):
+                size = round(f['filesize'] / (1024 * 1024), 2)
+            else:
+                size = "?"
+            note = f.get("format_note") or f.get("resolution") or "Unknown"
+            text = f"{note} ({f.get('ext', 'mp4')}, {size} MB)"
+            formats.append((text, f['format_id']))
+
+    if not formats:
+        await update.message.reply_text("❌ No downloadable formats found.")
+        return
+
+    buttons = [[InlineKeyboardButton(text, callback_data=f"{url}|{fmt_id}")]
+                for text, fmt_id in formats[:10]]  # show top 10 formats
+
+    await update.message.reply_text(
+        f"🎥 *{info['title']}*\n\nSelect the resolution to download:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="Markdown"
+    )
+
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    url, fmt_id = query.data.split("|")
+
+    await query.edit_message_text("⬇️ Downloading your selected video, please wait...")
+
+    ydl_opts = {
+        'format': fmt_id,
+        'outtmpl': 'downloaded_video.%(ext)s',
+        'quiet': True
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            file_path = ydl.prepare_filename(info)
+
+        await query.edit_message_text("✅ Uploading to Telegram...")
+        await query.message.reply_document(document=open(file_path, "rb"), caption=f"🎬 {info['title']}")
+        os.remove(file_path)
+        await query.edit_message_text("✅ Done!")
+
+    except Exception as e:
+        await query.edit_message_text(f"❌ Error: {str(e)}")
+
+
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, get_video_info))
+    app.add_handler(CallbackQueryHandler(button_handler))
+
+    print("✅ Bot is running...")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
